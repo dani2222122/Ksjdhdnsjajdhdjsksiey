@@ -1,0 +1,164 @@
+import asyncio
+import time
+import unicodedata
+from TikTokLive import TikTokLiveClient
+from TikTokLive.events import CommentEvent, GiftEvent, ConnectEvent, FollowEvent
+from TikTokLive.client.errors import SignAPIError
+from escpos.printer import Usb
+from escpos.exceptions import DeviceNotFoundError
+import usb.backend.libusb1
+
+# ================== CONFIG ==================
+TIKTOK_USERNAME = "usuario_real_aqui"
+EULER_API_KEY = "SUA_CHAVE_AQUI"
+
+VENDOR_ID = 0x28E9
+PRODUCT_ID = 0x0289
+
+DLL_PATH = r"C:\Users\guigu\Downloads\maquina\libusb-1.0.dll"
+
+IN_EP = 0x81
+OUT_EP = 0x01
+
+CORTE_SEM_FEED = b"\x1D\x56\x00"
+
+MAX_TENTATIVAS_LIVE = None
+ESPERA_ENTRE_TENTATIVAS = 5
+
+
+def limpar_texto(texto):
+    if not texto:
+        return ""
+    normalizado = unicodedata.normalize("NFKD", texto)
+    sem_acento = "".join(c for c in normalizado if not unicodedata.combining(c))
+    limpo = sem_acento.encode("ascii", "ignore").decode("ascii")
+    return limpo.strip()
+
+
+def conectar_impressora():
+    backend = usb.backend.libusb1.get_backend(
+        find_library=lambda x: DLL_PATH
+    )
+    if backend is None:
+        raise RuntimeError("Nao foi possivel carregar o backend libusb em: " + DLL_PATH)
+
+    return Usb(
+        VENDOR_ID,
+        PRODUCT_ID,
+        in_ep=IN_EP,
+        out_ep=OUT_EP,
+        usb_args={"backend": backend},
+    )
+
+
+printer = None
+try:
+    printer = conectar_impressora()
+    print("Impressora conectada com sucesso!")
+except Exception as e:
+    print("Erro ao conectar na impressora no inicio: " + str(e))
+
+
+def imprimir(nome, tipo, extra=""):
+    global printer
+
+    if printer is None:
+        try:
+            printer = conectar_impressora()
+        except Exception as e:
+            print("Impressora indisponivel: " + str(e))
+            return
+
+    nome = limpar_texto(nome) or "Anonimo"
+    extra = limpar_texto(extra)
+
+    try:
+        printer.set(align='center', bold=False, width=1, height=1)
+        printer.text(nome + "\n")
+
+        if tipo == "coracao":
+            printer.text("enviou Coracao no\n")
+        elif tipo == "rosa":
+            printer.text("enviou Rosa no\n")
+        elif tipo == "comentario":
+            printer.text(extra + "\n")
+        elif tipo == "seguidor":
+            printer.text("comecou a seguir\n")
+        else:
+            printer.text("enviou " + limpar_texto(tipo) + "\n")
+
+        printer.text("------------------------\n")
+        printer._raw(CORTE_SEM_FEED)
+
+    except DeviceNotFoundError as e:
+        print("Impressora desconectada: " + str(e))
+        printer = None
+    except Exception as e:
+        print("Erro ao imprimir: " + str(e))
+        printer = None
+
+
+client = TikTokLiveClient(
+    unique_id=TIKTOK_USERNAME,
+    web_kwargs={
+        "signer_kwargs": {"sign_api_key": EULER_API_KEY}
+    },
+)
+
+
+@client.on(ConnectEvent)
+async def on_connect(event):
+    print("Conectado na live de @" + event.unique_id)
+
+
+@client.on(CommentEvent)
+async def on_comment(event):
+    nome = event.user.nickname
+    comentario = event.comment
+    print(nome + " comentou: " + comentario)
+    imprimir(nome, "comentario", comentario)
+
+
+@client.on(GiftEvent)
+async def on_gift(event):
+    nome = event.user.nickname
+    gift_name = event.gift.name.lower()
+    print(nome + " enviou presente: " + gift_name)
+
+    if "rose" in gift_name or "rosa" in gift_name:
+        imprimir(nome, "rosa")
+    elif "heart" in gift_name or "coracao" in gift_name:
+        imprimir(nome, "coracao")
+    else:
+        imprimir(nome, gift_name)
+
+
+@client.on(FollowEvent)
+async def on_follow(event):
+    nome = event.user.nickname
+    print(nome + " comecou a seguir")
+    imprimir(nome, "seguidor")
+
+
+def rodar_com_retry():
+    tentativa = 0
+    while MAX_TENTATIVAS_LIVE is None or tentativa < MAX_TENTATIVAS_LIVE:
+        tentativa += 1
+        try:
+            print("Tentativa " + str(tentativa) + ": conectando na live de @" + TIKTOK_USERNAME + "...")
+            client.run()
+            print("Conexao encerrada. Tentando reconectar...")
+        except SignAPIError as e:
+            print("Erro na Sign API (tentativa " + str(tentativa) + "): " + str(e))
+        except KeyboardInterrupt:
+            print("Encerrado pelo usuario.")
+            break
+        except Exception as e:
+            print("Erro inesperado (tentativa " + str(tentativa) + "): " + str(e))
+
+        time.sleep(ESPERA_ENTRE_TENTATIVAS)
+
+
+if __name__ == '__main__':
+    print("Iniciando conexao com a live...")
+    rodar_com_retry()
