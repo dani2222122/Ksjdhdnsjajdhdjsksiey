@@ -104,6 +104,10 @@ except Exception as e:
 FILA_IMPRESSAO = queue.Queue()
 
 
+NOME_GRANDE_ON = b"\x1D\x21\x11" + b"\x1B\x45\x01"
+NOME_GRANDE_OFF = b"\x1D\x21\x00" + b"\x1B\x45\x00"
+
+
 def _imprimir_agora(nome, tipo, extra="", desenhar_coracao=False):
     global printer
 
@@ -118,10 +122,12 @@ def _imprimir_agora(nome, tipo, extra="", desenhar_coracao=False):
     extra = limpar_texto(extra)
 
     try:
-        printer.set(align='center', bold=True, width=2, height=2, density=DENSIDADE_IMPRESSAO)
+        printer.set(align='center')
+        printer._raw(NOME_GRANDE_ON)
         printer.text(nome + "\n")
+        printer._raw(NOME_GRANDE_OFF)
 
-        printer.set(align='center', bold=True, width=1, height=1, density=DENSIDADE_IMPRESSAO)
+        printer.set(align='center', bold=True, density=DENSIDADE_IMPRESSAO)
         if tipo == "comentario":
             printer.text(extra + "\n")
         else:
@@ -140,8 +146,7 @@ def _imprimir_agora(nome, tipo, extra="", desenhar_coracao=False):
         print("Impressora desconectada: " + str(e))
         printer = None
     except Exception as e:
-        print("Erro ao imprimir: " + str(e))
-        printer = None
+        print("Erro ao imprimir: " + repr(e))
 
 
 def _worker_impressao():
