@@ -1,6 +1,8 @@
 import asyncio
 import time
 import math
+import queue
+import threading
 import unicodedata
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, GiftEvent, ConnectEvent, FollowEvent
@@ -99,7 +101,10 @@ except Exception as e:
     print("Erro ao conectar na impressora no inicio: " + str(e))
 
 
-def imprimir(nome, tipo, extra="", desenhar_coracao=False):
+FILA_IMPRESSAO = queue.Queue()
+
+
+def _imprimir_agora(nome, tipo, extra="", desenhar_coracao=False):
     global printer
 
     if printer is None:
@@ -113,9 +118,10 @@ def imprimir(nome, tipo, extra="", desenhar_coracao=False):
     extra = limpar_texto(extra)
 
     try:
-        printer.set(align='center', bold=True, width=1, height=1, density=DENSIDADE_IMPRESSAO)
+        printer.set(align='center', bold=True, width=2, height=2, density=DENSIDADE_IMPRESSAO)
         printer.text(nome + "\n")
 
+        printer.set(align='center', bold=True, width=1, height=1, density=DENSIDADE_IMPRESSAO)
         if tipo == "comentario":
             printer.text(extra + "\n")
         else:
@@ -136,6 +142,23 @@ def imprimir(nome, tipo, extra="", desenhar_coracao=False):
     except Exception as e:
         print("Erro ao imprimir: " + str(e))
         printer = None
+
+
+def _worker_impressao():
+    while True:
+        item = FILA_IMPRESSAO.get()
+        if item is None:
+            break
+        nome, tipo, extra, desenhar_coracao = item
+        _imprimir_agora(nome, tipo, extra=extra, desenhar_coracao=desenhar_coracao)
+        FILA_IMPRESSAO.task_done()
+
+
+threading.Thread(target=_worker_impressao, daemon=True).start()
+
+
+def imprimir(nome, tipo, extra="", desenhar_coracao=False):
+    FILA_IMPRESSAO.put((nome, tipo, extra, desenhar_coracao))
 
 
 client = TikTokLiveClient(
