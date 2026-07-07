@@ -158,13 +158,26 @@ client = TikTokLiveClient(
 async def on_connect(event):
     print("Conectado na live de @" + event.unique_id)
 
+    # Salva a lista de presentes disponiveis nessa live num arquivo,
+    # assim voce sabe o nome exato de cada um pra colocar no dicionario PRESENTES
+    try:
+        info = getattr(client, "gift_info", None) or getattr(client, "available_gifts", None)
+        if info:
+            with open("presentes_encontrados.txt", "w", encoding="utf-8") as f:
+                for gift_id, gift in info.items():
+                    nome_presente = getattr(gift, "name", str(gift))
+                    f.write(str(gift_id) + " -> " + str(nome_presente) + "\n")
+            print("Lista de presentes salva em presentes_encontrados.txt")
+    except Exception as e:
+        print("Nao foi possivel salvar lista de presentes: " + str(e))
+
 
 @client.on(CommentEvent)
 async def on_comment(event):
+    # So mostra no console, NAO imprime no papel
     nome = event.user.nickname
     comentario = event.comment
     print(nome + " comentou: " + comentario)
-    imprimir(nome, "comentario", extra=comentario, desenhar_coracao=False)
 
 
 @client.on(GiftEvent)
@@ -203,7 +216,7 @@ def rodar_com_retry():
         tentativa += 1
         try:
             print("Tentativa " + str(tentativa) + ": conectando na live de @" + TIKTOK_USERNAME + "...")
-            client.run()
+            client.run(fetch_gift_info=True)
             print("Conexao encerrada. Tentando reconectar...")
         except SignAPIError as e:
             print("Erro na Sign API (tentativa " + str(tentativa) + "): " + str(e))
