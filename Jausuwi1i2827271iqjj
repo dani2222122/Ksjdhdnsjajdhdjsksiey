@@ -1,5 +1,6 @@
 import asyncio
 import time
+import math
 import unicodedata
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, GiftEvent, ConnectEvent, FollowEvent
@@ -7,6 +8,7 @@ from TikTokLive.client.errors import SignAPIError
 from escpos.printer import Usb
 from escpos.exceptions import DeviceNotFoundError
 import usb.backend.libusb1
+from PIL import Image, ImageDraw
 
 # ================== CONFIG ==================
 TIKTOK_USERNAME = "usuario_real_aqui"
@@ -25,6 +27,27 @@ CORTE_SEM_FEED = b"\x1D\x56\x00"
 MAX_TENTATIVAS_LIVE = None
 ESPERA_ENTRE_TENTATIVAS = 5
 
+# Quanto maior, mais escuro (0-8). Nem toda impressora clone respeita 100%.
+DENSIDADE_IMPRESSAO = 8
+
+# ================== MAPA DE PRESENTES ==================
+# Chave = trecho do nome do presente (em minusculo) que deve aparecer no gift.name
+# Valor = (texto exibido, desenhar_coracao?)
+# Adicione quantos quiser aqui embaixo.
+PRESENTES = {
+    "rose":      ("enviou Rosa",       True),
+    "rosa":      ("enviou Rosa",       True),
+    "heart":     ("enviou Coracao",    True),
+    "coracao":   ("enviou Coracao",    True),
+    "gg":        ("enviou GG",         True),
+    "lion":      ("enviou Leao",       True),
+    "leao":      ("enviou Leao",       True),
+    "rocket":    ("enviou Foguete",    True),
+    "foguete":   ("enviou Foguete",    True),
+    "universe":  ("enviou Universo",   True),
+    "galaxy":    ("enviou Galaxia",    True),
+}
+
 
 def limpar_texto(texto):
     if not texto:
@@ -35,6 +58,25 @@ def limpar_texto(texto):
     return limpo.strip()
 
 
+def gerar_coracao(tamanho=200):
+    """Gera um desenho de coracao preenchido em memoria (sem precisar de arquivo)."""
+    img = Image.new("1", (tamanho, tamanho), 1)
+    draw = ImageDraw.Draw(img)
+    pontos = []
+    for t in range(0, 628):
+        t_rad = t / 100
+        x = 16 * (math.sin(t_rad) ** 3)
+        y = 13 * math.cos(t_rad) - 5 * math.cos(2 * t_rad) - 2 * math.cos(3 * t_rad) - math.cos(4 * t_rad)
+        px = tamanho / 2 + x * (tamanho / 40)
+        py = tamanho / 2 - y * (tamanho / 40)
+        pontos.append((px, py))
+    draw.polygon(pontos, fill=0)
+    return img
+
+
+CORACAO_IMG = gerar_coracao()
+
+
 def conectar_impressora():
     backend = usb.backend.libusb1.get_backend(
         find_library=lambda x: DLL_PATH
@@ -42,13 +84,19 @@ def conectar_impressora():
     if backend is None:
         raise RuntimeError("Nao foi possivel carregar o backend libusb em: " + DLL_PATH)
 
-    return Usb(
+    p = Usb(
         VENDOR_ID,
         PRODUCT_ID,
         in_ep=IN_EP,
         out_ep=OUT_EP,
         usb_args={"backend": backend},
     )
+    try:
+        # ESC 7: ajusta tempo/intensidade de aquecimento da cabeça termica -> mais preto
+        p._raw(b"\x1B\x37\x07\xFF\x02")
+    except Exception:
+        pass
+    return p
 
 
 printer = None
@@ -59,7 +107,7 @@ except Exception as e:
     print("Erro ao conectar na impressora no inicio: " + str(e))
 
 
-def imprimir(nome, tipo, extra=""):
+def imprimir(nome, tipo, extra="", desenhar_coracao=False):
     global printer
 
     if printer is None:
@@ -73,19 +121,19 @@ def imprimir(nome, tipo, extra=""):
     extra = limpar_texto(extra)
 
     try:
-        printer.set(align='center', bold=False, width=1, height=1)
+        printer.set(align='center', bold=True, width=1, height=1, density=DENSIDADE_IMPRESSAO)
         printer.text(nome + "\n")
 
-        if tipo == "coracao":
-            printer.text("enviou Coracao no\n")
-        elif tipo == "rosa":
-            printer.text("enviou Rosa no\n")
-        elif tipo == "comentario":
+        if tipo == "comentario":
             printer.text(extra + "\n")
-        elif tipo == "seguidor":
-            printer.text("comecou a seguir\n")
         else:
-            printer.text("enviou " + limpar_texto(tipo) + "\n")
+            printer.text(tipo + "\n")
+
+        if desenhar_coracao:
+            try:
+                printer.image(CORACAO_IMG, center=True)
+            except Exception as e:
+                print("Erro ao imprimir coracao: " + str(e))
 
         printer.text("------------------------\n")
         printer._raw(CORTE_SEM_FEED)
@@ -116,7 +164,7 @@ async def on_comment(event):
     nome = event.user.nickname
     comentario = event.comment
     print(nome + " comentou: " + comentario)
-    imprimir(nome, "comentario", comentario)
+    imprimir(nome, "comentario", extra=comentario, desenhar_coracao=False)
 
 
 @client.on(GiftEvent)
@@ -125,19 +173,28 @@ async def on_gift(event):
     gift_name = event.gift.name.lower()
     print(nome + " enviou presente: " + gift_name)
 
-    if "rose" in gift_name or "rosa" in gift_name:
-        imprimir(nome, "rosa")
-    elif "heart" in gift_name or "coracao" in gift_name:
-        imprimir(nome, "coracao")
-    else:
-        imprimir(nome, gift_name)
+    texto_exibido = None
+    desenhar = False
+
+    for chave, (texto, com_coracao) in PRESENTES.items():
+        if chave in gift_name:
+            texto_exibido = texto
+            desenhar = com_coracao
+            break
+
+    if texto_exibido is None:
+        # Presente nao mapeado: imprime o nome mesmo assim, sem desenho
+        texto_exibido = "enviou " + limpar_texto(gift_name)
+        desenhar = False
+
+    imprimir(nome, texto_exibido, desenhar_coracao=desenhar)
 
 
 @client.on(FollowEvent)
 async def on_follow(event):
     nome = event.user.nickname
     print(nome + " comecou a seguir")
-    imprimir(nome, "seguidor")
+    imprimir(nome, "comecou a seguir", desenhar_coracao=False)
 
 
 def rodar_com_retry():
