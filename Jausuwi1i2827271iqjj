@@ -10,7 +10,6 @@ from escpos.exceptions import DeviceNotFoundError
 import usb.backend.libusb1
 from PIL import Image, ImageDraw
 
-# ================== CONFIG ==================
 TIKTOK_USERNAME = "usuario_real_aqui"
 EULER_API_KEY = "SUA_CHAVE_AQUI"
 
@@ -27,13 +26,8 @@ CORTE_SEM_FEED = b"\x1D\x56\x00"
 MAX_TENTATIVAS_LIVE = None
 ESPERA_ENTRE_TENTATIVAS = 5
 
-# Quanto maior, mais escuro (0-8). Nem toda impressora clone respeita 100%.
 DENSIDADE_IMPRESSAO = 8
 
-# ================== MAPA DE PRESENTES ==================
-# Chave = trecho do nome do presente (em minusculo) que deve aparecer no gift.name
-# Valor = (texto exibido, desenhar_coracao?)
-# Adicione quantos quiser aqui embaixo.
 PRESENTES = {
     "rose":      ("enviou Rosa",       True),
     "rosa":      ("enviou Rosa",       True),
@@ -59,7 +53,6 @@ def limpar_texto(texto):
 
 
 def gerar_coracao(tamanho=200):
-    """Gera um desenho de coracao preenchido em memoria (sem precisar de arquivo)."""
     img = Image.new("1", (tamanho, tamanho), 1)
     draw = ImageDraw.Draw(img)
     pontos = []
@@ -92,7 +85,6 @@ def conectar_impressora():
         usb_args={"backend": backend},
     )
     try:
-        # ESC 7: ajusta tempo/intensidade de aquecimento da cabeça termica -> mais preto
         p._raw(b"\x1B\x37\x07\xFF\x02")
     except Exception:
         pass
@@ -158,8 +150,6 @@ client = TikTokLiveClient(
 async def on_connect(event):
     print("Conectado na live de @" + event.unique_id)
 
-    # Salva a lista de presentes disponiveis nessa live num arquivo,
-    # assim voce sabe o nome exato de cada um pra colocar no dicionario PRESENTES
     try:
         info = getattr(client, "gift_info", None) or getattr(client, "available_gifts", None)
         if info:
@@ -174,33 +164,38 @@ async def on_connect(event):
 
 @client.on(CommentEvent)
 async def on_comment(event):
-    # So mostra no console, NAO imprime no papel
     nome = event.user.nickname
     comentario = event.comment
     print(nome + " comentou: " + comentario)
 
 
+def resolver_presente(gift_name):
+    for chave, (texto, com_coracao) in PRESENTES.items():
+        if chave in gift_name:
+            return texto, com_coracao
+    return "enviou " + limpar_texto(gift_name), False
+
+
 @client.on(GiftEvent)
 async def on_gift(event):
     nome = event.user.nickname
-    gift_name = event.gift.name.lower()
-    print(nome + " enviou presente: " + gift_name)
+    gift = event.gift
+    gift_name = gift.name.lower()
 
-    texto_exibido = None
-    desenhar = False
+    is_streakable = getattr(gift, "type", 0) == 1
 
-    for chave, (texto, com_coracao) in PRESENTES.items():
-        if chave in gift_name:
-            texto_exibido = texto
-            desenhar = com_coracao
-            break
+    if is_streakable and getattr(event, "streaking", False):
+        return
 
-    if texto_exibido is None:
-        # Presente nao mapeado: imprime o nome mesmo assim, sem desenho
-        texto_exibido = "enviou " + limpar_texto(gift_name)
-        desenhar = False
+    quantidade = event.repeat_count if is_streakable else 1
+    quantidade = max(1, int(quantidade))
 
-    imprimir(nome, texto_exibido, desenhar_coracao=desenhar)
+    print(nome + " enviou presente: " + gift_name + " x" + str(quantidade))
+
+    texto_exibido, desenhar = resolver_presente(gift_name)
+
+    for _ in range(quantidade):
+        imprimir(nome, texto_exibido, desenhar_coracao=desenhar)
 
 
 @client.on(FollowEvent)
